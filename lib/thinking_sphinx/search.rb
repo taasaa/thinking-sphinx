@@ -869,7 +869,16 @@ module ThinkingSphinx
       index_options = klass.sphinx_index_options
 
       ids = matches.collect { |match| match[:attributes]["sphinx_internal_id"] }
-      instances = ids.length > 0 ? klass.find(
+
+      # filter the result set based on permissions of the current user defined in CanCan
+      cancan_filtered_klass = if klass.respond_to?(:accessible_by) && options[:current_user_id]
+        klass.send(:accessible_by, Ability.new(User.find(options[:current_user_id])))
+      else
+        klass
+      end
+
+      instances = ids.length > 0 ? cancan_filtered_klass.find(
+
         :all,
         :joins      => options[:joins],
         :conditions => {klass.primary_key_for_sphinx.to_sym => ids},
@@ -894,7 +903,7 @@ module ThinkingSphinx
         instances.detect do |obj|
           obj.primary_key_for_sphinx == obj_id
         end
-      }
+      }.compact
     end
 
     # Group results by class and call #find(:all) once for each group to reduce
@@ -911,6 +920,13 @@ module ThinkingSphinx
           instances_from_class(class_from_crc(crc), group)
         )
       end
+
+      # leave only matches filtered with CanCan in original results set and updated related counts
+      results[:matches].select! do |m|
+        groups[m[:attributes][crc_attribute]].map(&:id).include?(m[:attributes]["sphinx_internal_id"])
+      end
+
+      results[:total] = results[:total_count] = results[:matches].size
 
       results[:matches].collect do |match|
         groups.detect { |crc, group|
