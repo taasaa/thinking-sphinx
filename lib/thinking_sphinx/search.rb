@@ -871,8 +871,8 @@ module ThinkingSphinx
       ids = matches.collect { |match| match[:attributes]["sphinx_internal_id"] }
 
       # filter the result set based on permissions of the current user defined in CanCan
-      cancan_filtered_klass = if klass.respond_to?(:accessible_by) && options[:current_user_id]
-        klass.send(:accessible_by, Ability.new(User.find(options[:current_user_id])))
+      cancan_filtered_klass = if klass.respond_to?(:accessible_by) && options[:current_ability]
+        klass.send(:accessible_by, options[:current_ability])
       else
         klass
       end
