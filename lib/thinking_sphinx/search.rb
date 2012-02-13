@@ -926,8 +926,6 @@ module ThinkingSphinx
         groups[m[:attributes][crc_attribute]].map(&:id).include?(m[:attributes]["sphinx_internal_id"])
       end
 
-      results[:total] = results[:total_count] = results[:matches].size
-
       results[:matches].collect do |match|
         groups.detect { |crc, group|
           crc == match[:attributes][crc_attribute]
