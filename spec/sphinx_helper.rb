@@ -1,13 +1,6 @@
 require 'active_record'
-prefix = defined?(JRUBY_VERSION) ? "jdbc" : ""
-require "active_record/connection_adapters/#{prefix}mysql_adapter"
-require "active_record/connection_adapters/mysql2_adapter"
-
-begin
-  require "active_record/connection_adapters/#{prefix}postgresql_adapter"
-rescue LoadError
-  # No postgres?  no prob...
-end
+require 'active_record/connection_adapters/mysql2_adapter'
+require 'active_record/connection_adapters/postgresql_adapter'
 require 'yaml'
 
 class SphinxHelper
@@ -25,6 +18,9 @@ class SphinxHelper
       @username = config['username']
       @password = config['password']
       @socket   = config['socket']
+      @sslca    = config['sslca']
+      @sslcert  = config['sslcert']
+      @sslkey   = config['sslkey']
     end
 
     @path = File.expand_path(File.dirname(__FILE__))
@@ -37,7 +33,10 @@ class SphinxHelper
       :username => @username,
       :password => @password,
       :host     => @host,
-      :socket   => @socket
+      :socket   => @socket,
+      :sslca    => @sslca,
+      :sslcert  => @sslcert,
+      :sslkey   => @sslkey
     )
     ActiveRecord::Base.logger = Logger.new(File.open('tmp/activerecord.log', 'a'))
 

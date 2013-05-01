@@ -18,9 +18,14 @@ module Cucumber
 
         @adapter  = (ENV['DATABASE'] || 'mysql').gsub /^mysql$/, 'mysql2'
         @database = 'thinking_sphinx'
-        @username = @adapter[/mysql/] ? 'root' : 'postgres'
-        # @password = 'thinking_sphinx'
+        @username = ENV['USER']
         @host     = 'localhost'
+
+        if @adapter[/mysql/]
+          @username = 'root'
+        elsif ENV['TRAVIS']
+          @username = 'postgres'
+        end
       end
 
       def setup
@@ -68,7 +73,8 @@ module Cucumber
         Kernel.at_exit do
           ::ThinkingSphinx::Configuration.instance.controller.stop
           sleep(0.5) # Ensure Sphinx has shut down completely
-          ActiveRecord::Base.logger.close
+          ::ThinkingSphinx::ActiveRecord::LogSubscriber.logger.close
+          ::ActiveRecord::Base.logger.close
         end
       end
 
@@ -89,7 +95,11 @@ module Cucumber
       end
 
       def configure_active_record
-        ActiveRecord::Base.logger = Logger.new(
+        ::ActiveRecord::Base.logger = Logger.new(
+          open("#{temporary_directory}/active_record.log", "a")
+        )
+
+        ::ThinkingSphinx::ActiveRecord::LogSubscriber.logger = Logger.new(
           open("#{temporary_directory}/active_record.log", "a")
         )
 

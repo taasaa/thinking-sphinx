@@ -3,13 +3,9 @@ require 'timeout'
 
 namespace :thinking_sphinx do
   task :app_env do
-    if defined?(RAILS_ROOT)
-      Rake::Task[:environment].invoke
-      if defined?(Rails.configuration)
-        Rails.configuration.cache_classes = false
-      else
-        Rails::Initializer.run { |config| config.cache_classes = false }
-      end
+    if defined?(Rails)
+      Rails.application.require_environment!
+      Rails.configuration.cache_classes = false
     elsif defined?(Merb)
       Rake::Task[:merb_env].invoke
     elsif defined?(Sinatra)
@@ -93,6 +89,7 @@ namespace :thinking_sphinx do
     end
 
     FileUtils.mkdir_p config.searchd_file_path
+    ThinkingSphinx.before_index_hooks.each { |hook| hook.call }
     config.controller.index :verbose => true
   end
 

@@ -12,7 +12,7 @@ module ThinkingSphinx
       instance_of? instance_values instance_variable_defined?
       instance_variable_get instance_variable_set instance_variables is_a?
       kind_of? member? method methods nil? object_id respond_to?
-      respond_to_missing? send should type )
+      respond_to_missing? send should tap type )
     SafeMethods = %w( partition private_methods protected_methods
       public_methods send class )
 
@@ -57,6 +57,10 @@ module ThinkingSphinx
       ThinkingSphinx.facets(*args)
     end
 
+    def self.warn(message)
+      ::ActiveSupport::Deprecation.warn message
+    end
+
     def self.bundle_searches(enum = nil)
       bundle = ThinkingSphinx::BundledSearch.new
 
@@ -91,15 +95,31 @@ module ThinkingSphinx
       populate if @options[:populate]
     end
 
+    def ==(object)
+      populate
+      super
+    end
+
     def to_a
       populate
       @array
+    end
+
+    # Populates the search result set
+    def all
+      populate
+      self
     end
 
     def freeze
       populate
       @array.freeze
       self
+    end
+
+    def as_json(*args)
+      populate
+      @array.as_json(*args)
     end
 
     # Indication of whether the request has been made to Sphinx for the search
@@ -215,7 +235,7 @@ module ThinkingSphinx
     def next_page?
       !next_page.nil?
     end
-    
+
     def last_page?
       next_page.nil?
     end
@@ -254,7 +274,7 @@ module ThinkingSphinx
     #
     def total_pages
       populate
-      return 0 if @results[:total].nil?
+      return 0 if @results.nil? || @results[:total].nil?
 
       @total_pages ||= (@results[:total] / per_page.to_f).ceil
     end
@@ -279,7 +299,7 @@ module ThinkingSphinx
     #
     def total_entries
       populate
-      return 0 if @results[:total_found].nil?
+      return 0 if @results.nil? || @results[:total_found].nil?
 
       @total_entries ||= @results[:total_found]
     end
@@ -295,6 +315,8 @@ module ThinkingSphinx
     def offset
       @options[:offset] || ((current_page - 1) * per_page)
     end
+
+    alias_method :offset_value, :offset
 
     def indexes
       return options[:index] if options[:index]
@@ -337,13 +359,15 @@ module ThinkingSphinx
       populate
 
       index = options[:index] || "#{model.core_index_names.first}"
-      client.excerpts(
-        {
-          :docs   => [string.to_s],
-          :words  => results[:words].keys.join(' '),
-          :index  => index.split(',').first.strip
-        }.merge(options[:excerpt_options] || {})
-      ).first
+      take_client do |client|
+        client.excerpts(
+          {
+            :docs   => [string.to_s],
+            :words  => query,
+            :index  => index.split(',').first.strip
+          }.merge(options[:excerpt_options] || {})
+        ).first
+      end
     end
 
     def search(*args)
@@ -369,10 +393,16 @@ module ThinkingSphinx
       ThinkingSphinx::FacetSearch.new(*args)
     end
 
-    def client
-      client = options[:client] || config.client
-
-      prepare client
+    def take_client
+      if options[:client]
+        prepare options[:client]
+        yield options[:client]
+      else
+        ThinkingSphinx::Connection.take do |client|
+          prepare client
+          yield client
+        end
+      end
     end
 
     def append_to(client)
@@ -398,47 +428,73 @@ module ThinkingSphinx
     def populate
       return if @populated
       @populated = true
+      retries    = hard_retries
 
-      retry_on_stale_index do
-        begin
-          log "Querying: '#{query}'"
-          runtime = Benchmark.realtime {
-            @results = client.query query, indexes, comment
-          }
-          log "Found #{@results[:total_found]} results", :debug,
-            "Sphinx (#{sprintf("%f", runtime)}s)"
+      begin
+        retry_on_stale_index do
+          begin
+            @results = nil
+            log query do
+              take_client do |client|
+                @results = client.query query, indexes, comment
+              end
+            end
+            total = @results[:total_found].to_i
+            log "Found #{total} result#{'s' unless total == 1}"
+            log "Sphinx Daemon returned warning: #{warning}" if warning?
 
-          log "Sphinx Daemon returned warning: #{warning}", :error if warning?
-
-          if error?
-            log "Sphinx Daemon returned error: #{error}", :error
-            raise SphinxError.new(error, @results) unless options[:ignore_errors]
+            if error?
+              log "Sphinx Daemon returned error: #{error}"
+              raise SphinxError.new(error, @results) unless options[:ignore_errors]
+            end
+          rescue Errno::ECONNREFUSED => err
+            raise ThinkingSphinx::ConnectionError,
+              'Connection to Sphinx Daemon (searchd) failed.'
           end
-        rescue Errno::ECONNREFUSED => err
-          raise ThinkingSphinx::ConnectionError,
-            'Connection to Sphinx Daemon (searchd) failed.'
-        end
 
-        compose_results
+          compose_results
+        end
+      rescue => e
+        log 'Caught Sphinx exception: %s (%s %s left)' % [
+          e.message, retries, (retries == 1 ? 'try' : 'tries')
+        ]
+        retries -= 1
+        if retries >= 0
+          retry
+        else
+          raise e
+        end
       end
     end
 
     def compose_results
       if options[:ids_only]
         compose_ids_results
+      elsif options[:attributes_only]
+        compose_attributes_results
       elsif options[:only]
         compose_only_results
       else
         replace instances_from_matches
         add_excerpter
         add_sphinx_attributes
-        add_matching_fields if client.rank_mode == :fieldmask
+        add_matching_fields if options[:rank_mode] == :fieldmask
       end
     end
 
     def compose_ids_results
       replace @results[:matches].collect { |match|
         match[:attributes]['sphinx_internal_id']
+      }
+    end
+
+    def compose_attributes_results
+      replace @results[:matches].collect { |match|
+        attributes = {}
+        match[:attributes].each do |name, value|
+          attributes[name.to_sym] = match[:attributes][name]
+        end
+        attributes
       }
     end
 
@@ -500,23 +556,23 @@ module ThinkingSphinx
       }
     end
 
-    def self.log(message, method = :debug, identifier = 'Sphinx')
-      return if ::ActiveRecord::Base.logger.nil?
-
-      info = ''
-      if ::ActiveRecord::Base.colorize_logging
-        identifier_color, message_color = "4;32;1", "0" # 0;1 = Bold
-        info << "  \e[#{identifier_color}m#{identifier}\e[0m   "
-        info << "\e[#{message_color}m#{message}\e[0m"
-      else
-        info = "#{identifier}   #{message}"
+    def self.log(message, &block)
+      if ThinkingSphinx::ActiveRecord::LogSubscriber.logger.nil?
+        yield if block_given?
+        return
       end
 
-      ::ActiveRecord::Base.logger.send method, info
+      if block_given?
+        ::ActiveSupport::Notifications.
+          instrument('query.thinking_sphinx', :query => message, &block)
+      else
+        ::ActiveSupport::Notifications.
+          instrument('message.thinking_sphinx', :message => message)
+      end
     end
 
-    def log(*args)
-      self.class.log(*args)
+    def log(query, &block)
+      self.class.log(query, &block)
     end
 
     def prepare(client)
@@ -528,7 +584,7 @@ module ThinkingSphinx
       [
         :max_matches, :group_by, :group_function, :group_clause,
         :group_distinct, :id_range, :cut_off, :retry_count, :retry_delay,
-        :rank_mode, :max_query_time, :field_weights
+        :rank_mode, :rank_expr, :max_query_time, :field_weights
       ].each do |key|
         value = options[key] || index_options[key]
         client.send("#{key}=", value) if value
@@ -571,7 +627,7 @@ module ThinkingSphinx
         # ID exclusion
         options[:without_ids] = Array(options[:without_ids]) | err.ids
 
-        log 'Sphinx Stale Ids (%s %s left): %s' % [
+        log 'Stale Ids (%s %s left): %s' % [
           retries, (retries == 1 ? 'try' : 'tries'), stale_ids.join(', ')
         ]
         retry
@@ -597,7 +653,8 @@ module ThinkingSphinx
       return '' if @options[:conditions].blank?
 
       ' ' + @options[:conditions].keys.collect { |key|
-        "@#{key} #{options[:conditions][key]}"
+        search_key = key.is_a?(::Array) ? "(#{key.join(',')})" : key
+        "@#{search_key} #{options[:conditions][key]}"
       }.join(' ')
     end
 
@@ -759,8 +816,10 @@ module ThinkingSphinx
         filter_value(value.first).first..filter_value(value.last).first
       when Array
         value.collect { |v| filter_value(v) }.flatten
-      when Date, Time
-        [value.to_time.to_i]
+      when Time
+        [value.to_i]
+      when Date
+        [Time.utc(value.year, value.month, value.day).to_i]
       when NilClass
         0
       else
@@ -826,6 +885,10 @@ module ThinkingSphinx
       end
     end
 
+    def hard_retries
+      options[:hard_retry_count] || config.hard_retry_count
+    end
+
     def include_for_class(klass)
       includes = options[:include] || klass.sphinx_index_options[:include]
 
@@ -877,8 +940,7 @@ module ThinkingSphinx
         klass
       end
 
-      instances = ids.length > 0 ? cancan_filtered_klass.find(
-
+      instances = ids.length > 0 ? cancan_filtered_klass.unscoped.find(
         :all,
         :joins      => options[:joins],
         :conditions => {klass.primary_key_for_sphinx.to_sym => ids},

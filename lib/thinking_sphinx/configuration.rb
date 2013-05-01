@@ -5,7 +5,7 @@ module ThinkingSphinx
   # This class both keeps track of the configuration settings for Sphinx and
   # also generates the resulting file for Sphinx to use.
   #
-  # Here are the default settings, relative to RAILS_ROOT where relevant:
+  # Here are the default settings, relative to Rails.root where relevant:
   #
   # config file::           config/#{environment}.sphinx.conf
   # searchd log file::      log/searchd.log
@@ -28,6 +28,7 @@ module ThinkingSphinx
   # html remove elements::  ''
   # searchd_binary_name::   searchd
   # indexer_binary_name::   indexer
+  # hard_retry_count::      0
   #
   # If you want to change these settings, create a YAML file at
   # config/sphinx.yml with settings for each environment, in a similar
@@ -52,7 +53,7 @@ module ThinkingSphinx
 
     SourceOptions = Riddle::Configuration::SQLSource.settings.map { |setting|
       setting.to_s
-    } - %w( type sql_query_pre sql_query sql_joined_field sql_file_field
+    } - %w( type sql_query sql_joined_field sql_file_field
       sql_query_range sql_attr_uint sql_attr_bool sql_attr_bigint sql_query_info
       sql_attr_timestamp sql_attr_str2ordinal sql_attr_float sql_attr_multi
       sql_attr_string sql_attr_str2wordcount sql_column_buffers sql_field_string
@@ -64,7 +65,8 @@ module ThinkingSphinx
 
     attr_accessor :searchd_file_path, :allow_star, :app_root,
       :model_directories, :delayed_job_priority, :indexed_models, :use_64_bit,
-      :touched_reindex_file, :stop_timeout, :version, :shuffle
+      :touched_reindex_file, :stop_timeout, :version, :shuffle,
+      :hard_retry_count
 
     attr_accessor :source_options, :index_options
 
@@ -90,7 +92,7 @@ module ThinkingSphinx
       else
         self.app_root   = Merb.root                  if defined?(Merb)
         self.app_root   = Sinatra::Application.root  if defined?(Sinatra)
-        self.app_root   = RAILS_ROOT                 if defined?(RAILS_ROOT)
+        self.app_root   = Rails.root                 if defined?(Rails)
         self.app_root ||= app_root
       end
 
@@ -107,11 +109,11 @@ module ThinkingSphinx
       self.searchd_file_path    = "#{self.app_root}/db/sphinx/#{environment}"
       self.allow_star           = false
       self.stop_timeout         = 5
-      self.model_directories    = ["#{app_root}/app/models/"] +
-        Dir.glob("#{app_root}/vendor/plugins/*/app/models/")
+      self.model_directories    = initial_model_directories
       self.delayed_job_priority = 0
       self.indexed_models       = []
-      self.shuffle              = true
+      self.shuffle              = false
+      self.hard_retry_count     = 0
 
       self.source_options  = {}
       self.index_options   = {
@@ -132,8 +134,8 @@ module ThinkingSphinx
     def self.environment
       @@environment ||= if defined?(Merb)
         Merb.environment
-      elsif defined?(RAILS_ENV)
-        RAILS_ENV
+      elsif defined?(Rails)
+        Rails.env
       elsif defined?(Sinatra)
         Sinatra::Application.environment.to_s
       else
@@ -195,6 +197,14 @@ module ThinkingSphinx
       @configuration.searchd.port = port
     end
 
+    def use_socket=(use_socket)
+      if use_socket
+        socket = "#{app_root}/tmp/sockets/searchd.#{self.environment}.sock"
+        @configuration.searchd.listen = socket
+        self.address = socket
+      end
+    end
+
     def pid_file
       @configuration.searchd.pid_file
     end
@@ -253,19 +263,11 @@ module ThinkingSphinx
 
     attr_accessor :timeout
 
-    def client
-      client = Riddle::Client.new shuffled_addresses, port,
-        configuration.searchd.client_key
-      client.max_matches = configuration.searchd.max_matches || 1000
-      client.timeout = timeout || 0
-      client
-    end
-
     def models_by_crc
       @models_by_crc ||= begin
         ThinkingSphinx.context.indexed_models.inject({}) do |hash, model|
           hash[model.constantize.to_crc32] = model
-          Object.subclasses_of(model.constantize).each { |subclass|
+          model.constantize.descendants.each { |subclass|
             hash[subclass.to_crc32] = subclass.name
           }
           hash
@@ -337,15 +339,18 @@ module ThinkingSphinx
       }
     end
 
-    def shuffled_addresses
-      return address unless shuffle
+    def initial_model_directories
+      directories = ["#{app_root}/app/models/"] +
+        Dir.glob("#{app_root}/vendor/plugins/*/app/models/")
 
-      addresses = Array(address)
-      if addresses.respond_to?(:shuffle)
-        addresses.shuffle
-      else
-        address.sort_by { rand }
+      if defined?(Rails) && Rails.application
+        directories += Rails.application.paths['app/models'].to_a
+        directories += Rails.application.railties.engines.collect { |engine|
+          engine.paths['app/models'].to_a
+	      }.flatten
       end
+
+      directories
     end
   end
 end

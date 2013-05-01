@@ -115,14 +115,14 @@ describe ThinkingSphinx::ActiveRecord do
       end
 
       it "should add a update_attribute_values callback when defined" do
-        Alpha.should_receive(:after_commit).with(:update_attribute_values)
+        Alpha.should_receive(:after_save).with(:update_attribute_values)
 
         Alpha.define_index { indexes :name }
         Alpha.define_indexes
       end
 
       it "should not add update_attribute_values callback more than once" do
-        Alpha.should_receive(:after_commit).with(:update_attribute_values).once
+        Alpha.should_receive(:after_save).with(:update_attribute_values).once
 
         Alpha.define_index { indexes :name }
         Alpha.define_index { indexes :name }
@@ -172,7 +172,7 @@ describe ThinkingSphinx::ActiveRecord do
       end
 
       it "should add an index_delta callback if deltas are enabled" do
-        Beta.stub!(:after_commit => true)
+        Beta.stub!(:after_save => true)
         Beta.should_receive(:after_commit).with(:index_delta)
 
         Beta.define_index {
@@ -271,9 +271,8 @@ describe ThinkingSphinx::ActiveRecord do
       @client.stub!(:update => true)
       @person = Person.find(:first)
 
-      @configuration.stub!(:client => @client)
+      ThinkingSphinx::Connection.stub(:take).and_yield(@client)
       Person.sphinx_indexes.each { |index| index.stub!(:delta? => false) }
-      Person.stub!(:search_for_id => true)
     end
 
     it "should update the core index's deleted flag if in core index" do
@@ -284,19 +283,9 @@ describe ThinkingSphinx::ActiveRecord do
       @person.toggle_deleted
     end
 
-    it "shouldn't update the core index's deleted flag if the record isn't in it" do
-      Person.stub!(:search_for_id => false)
-      @client.should_not_receive(:update).with(
-        "person_core", ["sphinx_deleted"], {@person.sphinx_document_id => [1]}
-      )
-
-      @person.toggle_deleted
-    end
-
     it "shouldn't attempt to update the deleted flag if sphinx isn't running" do
       ThinkingSphinx.stub!(:sphinx_running? => false)
       @client.should_not_receive(:update)
-      Person.should_not_receive(:search_for_id)
 
       @person.toggle_deleted
     end
@@ -419,6 +408,21 @@ describe ThinkingSphinx::ActiveRecord do
     end
   end
 
+  describe '#types_for_sphinx' do
+    after :each do
+      Person.set_sphinx_types nil
+    end
+
+    it "should return nil by default" do
+      Person.sphinx_types.should == nil
+    end
+
+    it "should return the specified value" do
+      Person.set_sphinx_types %w(Person Parent)
+      Person.sphinx_types.should == %w(Person Parent)
+    end
+  end
+
   describe '.sphinx_index_names' do
     it "should return the core index" do
       Alpha.define_index { indexes :name }
@@ -477,15 +481,7 @@ describe ThinkingSphinx::ActiveRecord do
     before :each do
       @client = stub('client')
       ThinkingSphinx.stub!(:sphinx_running? => true)
-      ThinkingSphinx::Configuration.instance.stub!(:client => @client)
-      Alpha.stub!(:search_for_id => true)
-    end
-
-    it "should not update if the document isn't in the given index" do
-      Alpha.stub!(:search_for_id => false)
-      @client.should_not_receive(:update)
-
-      Alpha.delete_in_index('alpha_core', 42)
+      ThinkingSphinx::Connection.stub(:take).and_yield(@client)
     end
 
     it "should direct the update to the supplied index" do
@@ -572,14 +568,6 @@ describe ThinkingSphinx::ActiveRecord do
       Alpha.sphinx_index_blocks.clear
 
       Alpha.should_not have_sphinx_indexes
-    end
-  end
-
-  describe '.reset_subclasses' do
-    it "should reset the stored context" do
-      ThinkingSphinx.should_receive(:reset_context!)
-
-      ActiveRecord::Base.reset_subclasses
     end
   end
 end

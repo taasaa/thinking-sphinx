@@ -40,7 +40,7 @@ class ThinkingSphinx::Context
   private
 
   def add_indexed_models
-    Object.subclasses_of(ActiveRecord::Base).each do |klass|
+    ActiveRecord::Base.descendants.each do |klass|
       add_indexed_model klass if klass.has_sphinx_indexes?
     end
   end
@@ -56,15 +56,20 @@ class ThinkingSphinx::Context
 
         next if model_name.nil?
         camelized_model = model_name.camelize
-        next if ::ActiveRecord::Base.send(:subclasses).detect { |model|
+        next if ::ActiveRecord::Base.descendants.detect { |model|
           model.name == camelized_model
         }
 
         begin
           camelized_model.constantize
-        rescue LoadError
+        rescue LoadError, NameError
           # Make sure that STI subclasses in subfolders are loaded.
-          model_name.gsub!(/.*[\/\\]/, '').nil? ? next : retry
+          if camelized_model.gsub!(/.+::/, '').nil?
+            STDERR.puts "ThinkingSphinx: error loading #{file}"
+            next
+          else
+            retry
+          end
         rescue Exception => err
           STDERR.puts "Warning: Error loading #{file}:"
           STDERR.puts err.message

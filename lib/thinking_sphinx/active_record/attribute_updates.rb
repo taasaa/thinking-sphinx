@@ -3,7 +3,7 @@ module ThinkingSphinx
     module AttributeUpdates
       def self.included(base)
         base.class_eval do
-          after_commit :update_attribute_values
+          after_save :update_attribute_values
         end
       end
 
@@ -40,10 +40,11 @@ module ThinkingSphinx
       end
 
       def update_index(index_name, attribute_names, attribute_values)
-        config = ThinkingSphinx::Configuration.instance
-        config.client.update index_name, attribute_names, {
-          sphinx_document_id => attribute_values
-        }
+        ThinkingSphinx::Connection.take do |client|
+          client.update index_name, attribute_names, {
+            sphinx_document_id => attribute_values
+          }
+        end
       rescue Riddle::ConnectionError, Riddle::ResponseError,
         ThinkingSphinx::SphinxError, Errno::ETIMEDOUT
         # Not the end of the world if Sphinx isn't running.

@@ -1,6 +1,6 @@
 require 'thread'
 require 'active_record'
-require 'after_commit'
+require 'innertube'
 require 'yaml'
 require 'riddle'
 
@@ -12,6 +12,7 @@ require 'thinking_sphinx/association'
 require 'thinking_sphinx/attribute'
 require 'thinking_sphinx/bundled_search'
 require 'thinking_sphinx/configuration'
+require 'thinking_sphinx/connection'
 require 'thinking_sphinx/context'
 require 'thinking_sphinx/excerpter'
 require 'thinking_sphinx/facet'
@@ -21,20 +22,16 @@ require 'thinking_sphinx/field'
 require 'thinking_sphinx/index'
 require 'thinking_sphinx/join'
 require 'thinking_sphinx/source'
-require 'thinking_sphinx/rails_additions'
 require 'thinking_sphinx/search'
 require 'thinking_sphinx/search_methods'
 require 'thinking_sphinx/deltas'
+require 'thinking_sphinx/version'
 
 require 'thinking_sphinx/adapters/abstract_adapter'
 require 'thinking_sphinx/adapters/mysql_adapter'
 require 'thinking_sphinx/adapters/postgresql_adapter'
 
-ActiveRecord::Base.send(:include, ThinkingSphinx::ActiveRecord)
-
-Merb::Plugins.add_rakefiles(
-  File.join(File.dirname(__FILE__), "thinking_sphinx", "tasks")
-) if defined?(Merb)
+require 'thinking_sphinx/railtie' if defined?(Rails)
 
 module ThinkingSphinx
   mattr_accessor :database_adapter
@@ -294,7 +291,15 @@ module ThinkingSphinx
     )
   end
 
+  def self.rails_3_1?
+    !!defined?(::ActiveRecord::Associations::CollectionProxy)
+  end
+
+  def self.before_index_hooks
+    @before_index_hooks
+  end
+
+  @before_index_hooks = []
+
   extend ThinkingSphinx::SearchMethods::ClassMethods
 end
-
-ThinkingSphinx::AutoVersion.detect

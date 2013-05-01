@@ -14,13 +14,13 @@ module ThinkingSphinx
         clause.split('), ').join(") || '#{separator}' || ")
       else
         clause.split(', ').collect { |field|
-          "CAST(COALESCE(#{field}, '') as varchar)"
+          "CAST(COALESCE(#{field}::varchar, '') as varchar)"
         }.join(" || '#{separator}' || ")
       end
     end
 
     def group_concatenate(clause, separator = ' ')
-      if connection.raw_connection.server_version >= 80400
+      if server_version >= 80400
         "array_to_string(array_agg(COALESCE(#{clause}, '0')), '#{separator}')"
       else
         "array_to_string(array_accum(COALESCE(#{clause}, '0')), '#{separator}')"
@@ -33,9 +33,9 @@ module ThinkingSphinx
 
     def cast_to_datetime(clause)
       if ThinkingSphinx::Configuration.instance.use_64_bit
-        "cast(extract(epoch from #{clause}) as bigint)"
+        "cast(floor(extract(epoch from #{clause})) as bigint)"
       else
-        "cast(extract(epoch from #{clause}) as int)"
+        "cast(floor(extract(epoch from #{clause})) as int)"
       end
     end
 
@@ -109,11 +109,9 @@ module ThinkingSphinx
     end
 
     def create_array_accum_function
-      if connection.raw_connection.respond_to?(:server_version) &&
-        connection.raw_connection.server_version >= 80400
+      if server_version >= 80311
         return
-      elsif connection.raw_connection.respond_to?(:server_version) &&
-        connection.raw_connection.server_version > 80200
+      elsif server_version > 80200
         execute <<-SQL
           CREATE AGGREGATE array_accum (anyelement)
           (
@@ -174,6 +172,17 @@ module ThinkingSphinx
         $$ IMMUTABLE LANGUAGE plpgsql;
       SQL
       execute function, true
+    end
+
+    def server_version
+      if RUBY_PLATFORM == 'java'
+        (connection.raw_connection.connection.server_major_version * 10000) +
+        (connection.raw_connection.connection.server_minor_version * 100)
+      elsif connection.raw_connection.respond_to?(:server_version)
+        connection.raw_connection.server_version
+      else
+        0
+      end
     end
   end
 end
